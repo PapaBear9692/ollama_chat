@@ -574,7 +574,7 @@ export default function Home() {
             </div>
           </div>
           <p className="disclaimer">
-            {busy ? "Generating locally · your data never leaves this machine" : "100% local · private by design"}
+            {busy ? "Brewing tokens, one at a time…" : "Where silicon meets imagination"}
           </p>
         </div>
       </div>
