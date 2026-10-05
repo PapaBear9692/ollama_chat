@@ -5,9 +5,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSessionState, sessionKeys, sessionHelpers } from "./useSessionState";
 
-type Msg = { role: "user" | "assistant" | "system"; content: string; thinking?: string };
+type Msg = { role: "user" | "assistant" | "system"; content: string; thinking?: string; sources?: { docName: string; page: number; score: number }[] };
 type Chat = { id: string; title: string; updated: number; messages: Msg[] };
 type ModelInfo = { name: string; size: number };
+type DocRecord = { doc_id: string; doc_name: string; hash: string; pages: number; chunk_count: number; ingested_at: number };
 type ThinkLevel = "off" | "low" | "medium" | "high" | "max";
 
 const THINK_LEVELS: { value: ThinkLevel; label: string }[] = [
@@ -36,6 +37,7 @@ function readChats(): Chat[] {
             role: x.r,
             content: x.c,
             ...(x.k ? { thinking: x.k } : {}),
+            ...(x.s ? { sources: x.s } : {}),
           }))
         : [],
     }));
@@ -56,6 +58,7 @@ function writeChats(chats: Chat[]) {
             r: x.role,
             c: x.content.slice(0, 1500),
             ...(x.thinking ? { k: x.thinking.slice(0, 1500) } : {}),
+            ...(x.sources ? { s: x.sources } : {}),
           })),
         }))
       )
@@ -116,6 +119,10 @@ export default function Home() {
   const [thinkOpen, setThinkOpen] = useState(false);
   const [showThinking, setShowThinking] = useState<Record<number, boolean>>({});
   const [collapsed, setCollapsed] = useSessionState<boolean>(sessionKeys.collapsed, false);
+  const [ragOn, setRagOn] = useSessionState<boolean>("ollama_session_rag", false);
+  const [docs, setDocs] = useState<DocRecord[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -142,10 +149,17 @@ export default function Home() {
     fetch("/api/models")
       .then((r) => r.json())
       .then((d) => {
-        const infos: ModelInfo[] = (d.models || []).map((m: any) => ({
-          name: m.name,
-          size: m.size,
-        }));
+        // hide embedding models from the chat picker (e.g. nomic-embed-text)
+        const isEmbed = (m: any) =>
+          String(m.name).toLowerCase().includes("embed") ||
+          (m?.details?.families || []).includes("embedding") ||
+          (m?.details?.families || []).includes("embed");
+        const infos: ModelInfo[] = (d.models || [])
+          .filter((m: any) => !isEmbed(m))
+          .map((m: any) => ({
+            name: m.name,
+            size: m.size,
+          }));
         setModelInfos(infos);
         if (infos.length) {
           // read the session-persisted model directly from storage (the
@@ -192,6 +206,50 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", h);
   }, [thinkOpen]);
 
+  // load documents list
+  useEffect(() => {
+    fetch("/api/rag/documents")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d.docs)) setDocs(d.docs); })
+      .catch(() => {});
+  }, []);
+
+  async function uploadFile(file: File) {
+    if (uploading) return;
+    setUploading(true);
+    setErr("");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/rag/ingest", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Upload failed");
+      if (data.duplicate) {
+        setErr(`"${data.doc.doc_name}" is already indexed (${data.doc.chunk_count} chunks).`);
+      }
+      const list = await fetch("/api/rag/documents").then((r) => r.json());
+      if (Array.isArray(list.docs)) setDocs(list.docs);
+    } catch (e: any) {
+      setErr(e.message || "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function deleteDoc(docId: string) {
+    try {
+      const res = await fetch("/api/rag/documents", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ docId }),
+      });
+      const data = await res.json();
+      if (Array.isArray(data.docs)) setDocs(data.docs);
+    } catch {
+      /* ignore */
+    }
+  }
+
   function persist(baseChats: Chat[], id: string, msgs: Msg[]) {
     const list = baseChats.map((c) =>
       c.id === id ? { ...c, messages: msgs, updated: Date.now() } : c
@@ -225,8 +283,9 @@ export default function Home() {
 
     let assistant = "";
     let thinking = "";
+    let sources: Msg["sources"] | undefined;
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch(ragOn ? "/api/rag/query" : "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model, messages: next, think }),
@@ -246,6 +305,7 @@ export default function Home() {
           if (!line.trim()) continue;
           const obj = JSON.parse(line);
           if (obj.error) throw new Error(obj.error);
+          if (obj.sources) sources = obj.sources;
           if (obj.message?.thinking) thinking += obj.message.thinking;
           assistant += obj.message?.content ?? "";
           setMessages((m) => {
@@ -254,6 +314,7 @@ export default function Home() {
               role: "assistant",
               content: assistant,
               ...(thinking ? { thinking } : {}),
+              ...(sources ? { sources } : {}),
             };
             return copy;
           });
@@ -263,7 +324,7 @@ export default function Home() {
       setErr(e.message || "Request failed");
     } finally {
       const finalMsgs: Msg[] = assistant
-        ? [...next, { role: "assistant", content: assistant, ...(thinking ? { thinking } : {}) }]
+        ? [...next, { role: "assistant", content: assistant, ...(thinking ? { thinking } : {}), ...(sources ? { sources } : {}) }]
         : next;
       setMessages(finalMsgs);
       persist(baseChats, id, finalMsgs);
@@ -305,13 +366,17 @@ export default function Home() {
 
       <aside className={`sidebar ${drawer ? "open" : ""} ${collapsed ? "collapsed" : ""}`}>
         <div className="sb-head">
-          <span className="sb-title">History</span>
+          <span className="sb-title">Documents</span>
           <div className="sb-head-actions">
-            <button className="sb-new" onClick={newChat}>
-              <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-                <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-              </svg>
-              New
+            <button className="sb-new" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+              {uploading ? (
+                <span className="spinner" />
+              ) : (
+                <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                  <path d="M12 16V6m0 0l-4 4m4-4l4 4M5 18h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                </svg>
+              )}
+              {uploading ? "Indexing…" : "Upload"}
             </button>
             <button
               className="sb-collapse"
@@ -324,6 +389,50 @@ export default function Home() {
               </svg>
             </button>
           </div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.txt"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) uploadFile(f);
+            e.target.value = "";
+          }}
+        />
+        <div className="sb-docs">
+          {docs.length === 0 && !uploading && (
+            <p className="sb-empty">No documents yet. Upload a PDF or TXT to ground answers in your files.</p>
+          )}
+          {docs.map((d) => (
+            <div key={d.doc_id} className="doc-card">
+              <div className="doc-icon">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                </svg>
+              </div>
+              <div className="doc-info">
+                <span className="doc-name">{d.doc_name}</span>
+                <span className="doc-meta">{d.chunk_count} chunks{d.pages > 1 ? ` · ${d.pages} pages` : ""}</span>
+              </div>
+              <button className="sb-del" title="Remove document" onClick={() => deleteDoc(d.doc_id)}>
+                <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div className="sb-head">
+          <span className="sb-title">History</span>
+          <button className="sb-new" onClick={newChat}>
+            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+            </svg>
+            New
+          </button>
         </div>
         <div className="sb-list">
           {chats.length === 0 && (
@@ -479,6 +588,23 @@ export default function Home() {
                       </span>
                     ) : null}
                   </div>
+                  {m.sources && m.sources.length > 0 && (
+                    <div className="sources-row">
+                      <span className="sources-label">Sources</span>
+                      <div className="sources-chips">
+                        {m.sources.map((s, j) => (
+                          <span key={j} className="source-chip" title={s.docName}>
+                            <svg viewBox="0 0 24 24" width="9" height="9" aria-hidden="true">
+                              <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                            </svg>
+                            {s.docName.length > 18 ? s.docName.slice(0, 16) + "…" : s.docName}
+                            {s.page > 0 ? ` · p.${s.page}` : ""}
+                            <span className="chip-score">{s.score}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )
             )}
@@ -580,6 +706,18 @@ export default function Home() {
                     </div>
                   )}
                 </div>
+
+                <button
+                  type="button"
+                  className={`model-pill rag-pill ${ragOn ? "active" : ""}`}
+                  onClick={() => setRagOn((o) => !o)}
+                  title={ragOn ? "Document-grounded answers ON — queries use your uploaded docs" : "Document-grounded answers OFF"}
+                >
+                  <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+                    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                  </svg>
+                  <span className="mp-name">Docs{docs.length > 0 ? ` · ${docs.length}` : ""}</span>
+                </button>
               </div>
               <button
                 className="send-btn"
