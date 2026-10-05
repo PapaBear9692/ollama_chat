@@ -4,9 +4,18 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-type Msg = { role: "user" | "assistant" | "system"; content: string };
+type Msg = { role: "user" | "assistant" | "system"; content: string; thinking?: string };
 type Chat = { id: string; title: string; updated: number; messages: Msg[] };
 type ModelInfo = { name: string; size: number };
+type ThinkLevel = "off" | "low" | "medium" | "high" | "max";
+
+const THINK_LEVELS: { value: ThinkLevel; label: string; hint: string }[] = [
+  { value: "off", label: "Off", hint: "No thinking — fastest replies" },
+  { value: "low", label: "Low", hint: "Brief reasoning before answering" },
+  { value: "medium", label: "Medium", hint: "Balanced depth and speed" },
+  { value: "high", label: "High", hint: "Deep reasoning, slower" },
+  { value: "max", label: "Max", hint: "Maximum reasoning effort" },
+];
 
 const COOKIE = "ollama_chats";
 const MAX_COOKIE = 3800; // stay under the 4KB per-cookie browser limit
@@ -22,7 +31,11 @@ function readChats(): Chat[] {
       title: String(c.t ?? "Chat"),
       updated: Number(c.u ?? 0),
       messages: Array.isArray(c.m)
-        ? c.m.map((x: any) => ({ role: x.r, content: x.c }))
+        ? c.m.map((x: any) => ({
+            role: x.r,
+            content: x.c,
+            ...(x.k ? { thinking: x.k } : {}),
+          }))
         : [],
     }));
   } catch {
@@ -38,7 +51,11 @@ function writeChats(chats: Chat[]) {
           id: c.id,
           t: c.title.slice(0, 60),
           u: c.updated,
-          m: c.messages.map((x) => ({ r: x.role, c: x.content.slice(0, 1500) })),
+          m: c.messages.map((x) => ({
+            r: x.role,
+            c: x.content.slice(0, 1500),
+            ...(x.thinking ? { k: x.thinking.slice(0, 1500) } : {}),
+          })),
         }))
       )
     );
@@ -94,9 +111,13 @@ export default function Home() {
   const [ollamaVer, setOllamaVer] = useState("");
   const [drawer, setDrawer] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [think, setThink] = useState<ThinkLevel>("off");
+  const [thinkOpen, setThinkOpen] = useState(false);
+  const [showThinking, setShowThinking] = useState<Record<number, boolean>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const thinkRef = useRef<HTMLDivElement>(null);
 
   // restore history from cookie + load models
   useEffect(() => {
@@ -135,6 +156,17 @@ export default function Home() {
     return () => document.removeEventListener("mousedown", h);
   }, [menuOpen]);
 
+  // close thinking menu on outside click
+  useEffect(() => {
+    if (!thinkOpen) return;
+    const h = (e: MouseEvent) => {
+      if (thinkRef.current && !thinkRef.current.contains(e.target as Node))
+        setThinkOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [thinkOpen]);
+
   function persist(baseChats: Chat[], id: string, msgs: Msg[]) {
     const list = baseChats.map((c) =>
       c.id === id ? { ...c, messages: msgs, updated: Date.now() } : c
@@ -167,11 +199,12 @@ export default function Home() {
     setMessages([...next, { role: "assistant", content: "" }]);
 
     let assistant = "";
+    let thinking = "";
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages: next }),
+        body: JSON.stringify({ model, messages: next, think }),
       });
       if (!res.ok || !res.body) throw new Error(await res.text());
 
@@ -188,10 +221,15 @@ export default function Home() {
           if (!line.trim()) continue;
           const obj = JSON.parse(line);
           if (obj.error) throw new Error(obj.error);
+          if (obj.message?.thinking) thinking += obj.message.thinking;
           assistant += obj.message?.content ?? "";
           setMessages((m) => {
             const copy = [...m];
-            copy[copy.length - 1] = { role: "assistant", content: assistant };
+            copy[copy.length - 1] = {
+              role: "assistant",
+              content: assistant,
+              ...(thinking ? { thinking } : {}),
+            };
             return copy;
           });
         }
@@ -200,7 +238,7 @@ export default function Home() {
       setErr(e.message || "Request failed");
     } finally {
       const finalMsgs: Msg[] = assistant
-        ? [...next, { role: "assistant", content: assistant }]
+        ? [...next, { role: "assistant", content: assistant, ...(thinking ? { thinking } : {}) }]
         : next;
       setMessages(finalMsgs);
       persist(baseChats, id, finalMsgs);
@@ -360,7 +398,29 @@ export default function Home() {
                 <div key={i} className="row-assistant">
                   <div className="assistant-head">
                     <span className="assistant-name">{modelName}</span>
+                    {m.thinking && (
+                      <button
+                        className={`think-toggle ${showThinking[i] ? "on" : ""}`}
+                        onClick={() =>
+                          setShowThinking((s) => ({ ...s, [i]: !s[i] }))
+                        }
+                      >
+                        <svg viewBox="0 0 24 24" width="10" height="10" aria-hidden="true">
+                          <path d="M12 3a6 6 0 0 0-3.6 10.8c.7.55 1.1 1.3 1.1 2.2h5c0-.9.4-1.65 1.1-2.2A6 6 0 0 0 12 3zM9.5 18h5M10.5 21h3"
+                            stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                        </svg>
+                        {busy && isLast(i) && !m.content ? "Thinking…" : "Thought process"}
+                        <svg className={`chev ${showThinking[i] ? "flip" : ""}`} viewBox="0 0 10 6" width="7" aria-hidden="true">
+                          <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinecap="round" />
+                        </svg>
+                      </button>
+                    )}
                   </div>
+                  {m.thinking && showThinking[i] && (
+                    <div className="thinking-panel">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.thinking}</ReactMarkdown>
+                    </div>
+                  )}
                   <div className="assistant-body">
                     {m.content ? (
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -402,7 +462,7 @@ export default function Home() {
                   <button
                     type="button"
                     className="model-pill"
-                    onClick={() => setMenuOpen((o) => !o)}
+                    onClick={() => { setMenuOpen((o) => !o); setThinkOpen(false); }}
                   >
                     <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
                       <rect x="7" y="7" width="10" height="10" rx="2.5" fill="currentColor" />
@@ -430,6 +490,48 @@ export default function Home() {
                           <span className="mo-size">{fmtSize(mi.size)}</span>
                         </button>
                       ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="model-menu" ref={thinkRef}>
+                  <button
+                    type="button"
+                    className={`model-pill think-pill ${think !== "off" ? "active" : ""}`}
+                    onClick={() => { setThinkOpen((o) => !o); setMenuOpen(false); }}
+                    title="Thinking effort"
+                  >
+                    <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+                      <path
+                        d="M12 3a6 6 0 0 0-3.6 10.8c.7.55 1.1 1.3 1.1 2.2h5c0-.9.4-1.65 1.1-2.2A6 6 0 0 0 12 3zM9.5 18h5M10.5 21h3"
+                        stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" fill="none"
+                      />
+                    </svg>
+                    <span className="mp-name">
+                      {think === "off" ? "Thinking" : THINK_LEVELS.find((t) => t.value === think)?.label}
+                    </span>
+                    <svg className={`chev ${thinkOpen ? "flip" : ""}`} viewBox="0 0 10 6" width="9" aria-hidden="true">
+                      <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                  {thinkOpen && (
+                    <div className="model-pop think-pop" role="menu">
+                      <div className="pop-title">Thinking effort</div>
+                      {THINK_LEVELS.map((t) => (
+                        <button
+                          key={t.value}
+                          className={`model-opt ${t.value === think ? "sel" : ""}`}
+                          onClick={() => {
+                            setThink(t.value);
+                            setThinkOpen(false);
+                          }}
+                        >
+                          <span className="mo-check">{t.value === think ? "\u2713" : ""}</span>
+                          <span className="mo-name">{t.label}</span>
+                          <span className="mo-size">{t.hint}</span>
+                        </button>
+                      ))}
+                      <div className="pop-note">Only affects models that support thinking</div>
                     </div>
                   )}
                 </div>
