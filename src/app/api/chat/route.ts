@@ -12,10 +12,13 @@ export async function POST(req: NextRequest) {
     stream: true,
   };
 
-  // Ollama "think" param: boolean or effort string. Only forward when enabled,
-  // so non-thinking models keep working with the selector set to Off.
+  // Ollama "think" param: boolean or effort string. Thinking-capable models
+  // (e.g. qwen3.5) default to thinking ON when the param is omitted, so "off"
+  // must send an explicit false.
   if (body.think && body.think !== "off") {
     payload.think = body.think;
+  } else if (body.think === "off") {
+    payload.think = false;
   }
 
   const ollamaRes = await fetch(`${OLLAMA}/api/chat`, {
