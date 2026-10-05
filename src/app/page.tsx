@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useSessionState, sessionKeys } from "./useSessionState";
+import { useSessionState, sessionKeys, sessionHelpers } from "./useSessionState";
 
 type Msg = { role: "user" | "assistant" | "system"; content: string; thinking?: string };
 type Chat = { id: string; title: string; updated: number; messages: Msg[] };
@@ -148,10 +148,12 @@ export default function Home() {
         }));
         setModelInfos(infos);
         if (infos.length) {
-          // If a model was restored from sessionStorage but isn't installed
-          // anymore, fall back to the first available; otherwise keep it.
-          const storedStillExists = infos.some((mi) => mi.name === model);
-          if (!model || !storedStillExists) setModel(infos[0].name);
+          // read the session-persisted model directly from storage (the
+          // state may not have rehydrated yet when this fetch resolves)
+          const stored = sessionHelpers.readJson<string>(sessionKeys.model) || "";
+          const storedStillExists = infos.some((mi) => mi.name === stored);
+          if (!stored || !storedStillExists) setModel(infos[0].name);
+          else setModel(stored);
         } else {
           setErr("No models found — run `ollama pull <model>`");
         }

@@ -27,12 +27,12 @@ function write(key: string, value: string | null) {
   }
 }
 
-// Picky helpers so JSON.parse failures don't trip React
 function readJson<T>(key: string): T | null {
   const raw = read(key);
   if (raw === null) return null;
   try {
-    return JSON.parse(raw) as T;
+    const parsed = JSON.parse(raw);
+    return parsed === null ? null : (parsed as T);
   } catch {
     return null;
   }
@@ -43,33 +43,34 @@ function writeJson(key: string, value: unknown) {
 
 /**
  * Drop-in replacement for useState that mirrors its value into
- * sessionStorage. `initial` is the default if nothing's stored yet.
+ * sessionStorage.
  *
- * Setter accepts either a value or an updater function (like React's setState).
+ * SSR-safe: the first render always uses `initial` on BOTH server and
+ * client (so hydration matches); the stored value is restored in a
+ * post-mount effect. Setter accepts a value or an updater function.
  */
 export function useSessionState<T>(
   key: string,
   initial: T
 ): [T, (v: T | ((prev: T) => T)) => void] {
-  const [value, setValue] = useState<T>(() => {
-    if (typeof window === "undefined") return initial;
-    const stored = readJson<T>(key);
-    return stored === null ? initial : stored;
-  });
+  const [value, setValue] = useState<T>(initial);
+  const restored = useRef(false);
 
-  // write-through; skip the very first run so we don't clobber a stored value
-  const firstRun = useRef(true);
   useEffect(() => {
-    if (firstRun.current) {
-      firstRun.current = false;
+    if (!restored.current) {
+      // first run (post-mount, client only): pull the stored value
+      restored.current = true;
+      const stored = readJson<T>(key);
+      if (stored !== null && stored !== value) setValue(stored);
       return;
     }
+    // subsequent runs: write-through
     writeJson(key, value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, value]);
 
   return [value, setValue];
 }
 
-// Typed helpers for the specific values we persist, so call sites stay clean.
 export const sessionKeys = KEYS;
 export const sessionHelpers = { read, write, readJson, writeJson };
