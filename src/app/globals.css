@@ -125,9 +125,13 @@ body {
 
 .sb-collapse:hover { color: var(--text); border-color: var(--border-strong); }
 
-/* expand button in topbar — desktop only */
+/* expand button — fixed to the viewport's top-left corner (desktop only) */
 .expand-btn {
-  display: none;
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 30;
+  display: grid;
   place-items: center;
   width: 34px;
   height: 34px;
@@ -136,7 +140,7 @@ body {
   background: var(--card);
   color: var(--text-soft);
   cursor: pointer;
-  margin-right: 2px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s;
