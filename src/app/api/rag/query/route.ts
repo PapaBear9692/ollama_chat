@@ -28,30 +28,36 @@ export async function POST(req: NextRequest) {
     return new Response(msg, { status: 500 });
   }
 
-  // 2. No relevant context -> grounded refusal, streamed like a normal answer
+  // 2. No relevant context -> fall back to a normal (ungrounded) chat turn.
+  // Grounding applies when documents match; otherwise the assistant answers
+  // from general knowledge like a regular chat.
   if (hits.length === 0) {
-    const refusal =
-      "I'm not sure based on the provided documents — nothing in the uploaded documents appears relevant to this question. Try rephrasing, or upload documents that cover this topic.";
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            JSON.stringify({
-              sources: [],
-              message: { role: "assistant", content: refusal },
-              done: false,
-            }) + "\n"
-          )
-        );
-        controller.enqueue(
-          encoder.encode(JSON.stringify({ done: true, final: true }) + "\n")
-        );
-        controller.close();
-      },
+    const payload: Record<string, unknown> = {
+      model: body.model,
+      messages: body.messages,
+      stream: true,
+    };
+    if (body.think && body.think !== "off") {
+      payload.think = body.think;
+    } else if (body.think === "off") {
+      payload.think = false;
+    }
+    const fallbackRes = await fetch(`${OLLAMA}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
-    return new Response(stream, {
-      headers: { "Content-Type": "application/x-ndjson" },
+    if (!fallbackRes.ok || !fallbackRes.body) {
+      const text = await fallbackRes.text().catch(() => "");
+      return new Response(text || `Ollama error ${fallbackRes.status}`, {
+        status: 502,
+      });
+    }
+    return new Response(fallbackRes.body, {
+      headers: {
+        "Content-Type": "application/x-ndjson",
+        "Cache-Control": "no-cache",
+      },
     });
   }
 
