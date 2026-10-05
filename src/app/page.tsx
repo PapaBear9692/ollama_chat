@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type Msg = { role: "user" | "assistant" | "system"; content: string };
 type Chat = { id: string; title: string; updated: number; messages: Msg[] };
@@ -360,12 +362,15 @@ export default function Home() {
                     <span className="assistant-name">{modelName}</span>
                   </div>
                   <div className="assistant-body">
-                    {m.content ||
-                      (busy && isLast(i) ? (
-                        <span className="thinking">
-                          <i /><i /><i />
-                        </span>
-                      ) : null)}
+                    {m.content ? (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {m.content}
+                      </ReactMarkdown>
+                    ) : busy && isLast(i) ? (
+                      <span className="thinking">
+                        <i /><i /><i />
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               )
