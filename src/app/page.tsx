@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useSessionState, sessionKeys } from "./useSessionState";
 
 type Msg = { role: "user" | "assistant" | "system"; content: string; thinking?: string };
 type Chat = { id: string; title: string; updated: number; messages: Msg[] };
@@ -103,18 +104,18 @@ export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [modelInfos, setModelInfos] = useState<ModelInfo[]>([]);
-  const [model, setModel] = useState("");
+  const [model, setModel] = useSessionState<string>(sessionKeys.model, "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [chats, setChats] = useState<Chat[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useSessionState<string | null>(sessionKeys.activeId, null);
   const [ollamaVer, setOllamaVer] = useState("");
   const [drawer, setDrawer] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [think, setThink] = useState<ThinkLevel>("off");
+  const [think, setThink] = useSessionState<ThinkLevel>(sessionKeys.think, "off");
   const [thinkOpen, setThinkOpen] = useState(false);
   const [showThinking, setShowThinking] = useState<Record<number, boolean>>({});
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useSessionState<boolean>(sessionKeys.collapsed, false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -123,6 +124,21 @@ export default function Home() {
   // restore history from cookie + load models
   useEffect(() => {
     setChats(readChats());
+
+    // if active chat was restored, load its messages too
+    try {
+      const stored = sessionStorage.getItem(sessionKeys.activeId);
+      if (stored) {
+        const id = JSON.parse(stored);
+        if (typeof id === "string") {
+          const c = readChats().find((x) => x.id === id);
+          if (c) setMessages(c.messages);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
     fetch("/api/models")
       .then((r) => r.json())
       .then((d) => {
@@ -131,8 +147,14 @@ export default function Home() {
           size: m.size,
         }));
         setModelInfos(infos);
-        if (infos.length) setModel(infos[0].name);
-        else setErr("No models found — run `ollama pull <model>`");
+        if (infos.length) {
+          // If a model was restored from sessionStorage but isn't installed
+          // anymore, fall back to the first available; otherwise keep it.
+          const storedStillExists = infos.some((mi) => mi.name === model);
+          if (!model || !storedStillExists) setModel(infos[0].name);
+        } else {
+          setErr("No models found — run `ollama pull <model>`");
+        }
         if (d.version) setOllamaVer(d.version);
       })
       .catch(() => setErr("Failed to load models"));
