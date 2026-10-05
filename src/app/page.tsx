@@ -9,12 +9,12 @@ type Chat = { id: string; title: string; updated: number; messages: Msg[] };
 type ModelInfo = { name: string; size: number };
 type ThinkLevel = "off" | "low" | "medium" | "high" | "max";
 
-const THINK_LEVELS: { value: ThinkLevel; label: string; hint: string }[] = [
-  { value: "off", label: "Off", hint: "No thinking — fastest replies" },
-  { value: "low", label: "Low", hint: "Brief reasoning before answering" },
-  { value: "medium", label: "Medium", hint: "Balanced depth and speed" },
-  { value: "high", label: "High", hint: "Deep reasoning, slower" },
-  { value: "max", label: "Max", hint: "Maximum reasoning effort" },
+const THINK_LEVELS: { value: ThinkLevel; label: string }[] = [
+  { value: "off", label: "Off" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "max", label: "Max" },
 ];
 
 const COOKIE = "ollama_chats";
@@ -114,6 +114,7 @@ export default function Home() {
   const [think, setThink] = useState<ThinkLevel>("off");
   const [thinkOpen, setThinkOpen] = useState(false);
   const [showThinking, setShowThinking] = useState<Record<number, boolean>>({});
+  const [collapsed, setCollapsed] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -278,15 +279,27 @@ export default function Home() {
         onClick={() => setDrawer(false)}
       />
 
-      <aside className={`sidebar ${drawer ? "open" : ""}`}>
+      <aside className={`sidebar ${drawer ? "open" : ""} ${collapsed ? "collapsed" : ""}`}>
         <div className="sb-head">
           <span className="sb-title">History</span>
-          <button className="sb-new" onClick={newChat}>
-            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-            </svg>
-            New
-          </button>
+          <div className="sb-head-actions">
+            <button className="sb-new" onClick={newChat}>
+              <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+              </svg>
+              New
+            </button>
+            <button
+              className="sb-collapse"
+              onClick={() => setCollapsed(true)}
+              title="Collapse sidebar"
+              aria-label="Collapse sidebar"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                <path d="M11 17l-5-5 5-5M18 17l-5-5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="sb-list">
           {chats.length === 0 && (
@@ -345,6 +358,16 @@ export default function Home() {
         <header className="topbar">
           <div className="topbar-inner">
             <div className="brand">
+              <button
+                className={`expand-btn ${collapsed ? "show" : ""}`}
+                onClick={() => setCollapsed(false)}
+                title="Show history"
+                aria-label="Show history"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path d="M13 17l5-5-5-5M6 17l5-5-5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                </svg>
+              </button>
               <button
                 className="hamburger"
                 onClick={() => setDrawer(true)}
@@ -528,10 +551,8 @@ export default function Home() {
                         >
                           <span className="mo-check">{t.value === think ? "\u2713" : ""}</span>
                           <span className="mo-name">{t.label}</span>
-                          <span className="mo-size">{t.hint}</span>
                         </button>
                       ))}
-                      <div className="pop-note">Only affects models that support thinking</div>
                     </div>
                   )}
                 </div>
